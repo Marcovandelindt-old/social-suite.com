@@ -10,6 +10,7 @@ use Illuminate\Http\Request;
 use Abraham\TwitterOAuth\TwitterOAuth;
 
 use App\TwitterUser;
+use App\Tweet;
 
 class TwitterController extends Controller
 {
@@ -42,7 +43,7 @@ class TwitterController extends Controller
     /**
      * Connect to the twitter API
      *
-     * @return TwitterOAuth $connection | false
+     * @return mixed TwitterOAuth $connection | false
      */
     public function connect($oauth_token = null, $oauth_verifier = null)
     {
@@ -149,6 +150,69 @@ class TwitterController extends Controller
                         ->with('status', 'Something went wrong while trying to authenticate you at Twitter. Please try again later.');
                 }
             }
+        }
+    }
+
+    /**
+     * Get the schedule view
+     */
+    public function getSchedule()
+    {
+        if (Auth::user()->twitter_authenticated == 1) {
+            return view('twitter.schedule');
+        }
+
+        return redirect()
+            ->route('twitter.authenticate')
+            ->with('status', 'You must be authenticated at Twitter.');
+    }
+
+    /**
+     * Post a scheduled tweet
+     *
+     * @param Request $request
+     */
+    public function postSchedule(Request $request)
+    {
+        $errors = [];
+
+        if (!$request->filled('status')) {
+            $errors[] = 'Please fill in a tweet.';
+        }
+
+        if (!$request->filled('date')) {
+            $errors[] = 'Please fill in a date';
+        }
+
+        if (!$request->filled('time')) {
+            $errors[] = 'Please fill in a time';
+        }
+
+        if (empty($errors)) {
+            $formatted_date     = date('Y-m-d', strtotime($request->date));
+            $formatted_time     = date('H:i:s', strtotime($request->time));
+            $formatted_datetime = $formatted_date . ' ' . $formatted_time;
+
+            if (!empty($formatted_datetime)) {
+                $tweet            = new Tweet();
+                $tweet->user_id   = Auth::user()->id;
+                $tweet->tweet     = $request->status;
+                $tweet->scheduled = $formatted_datetime;
+
+                if ($tweet->save()) {
+                    return redirect()
+                        ->route('twitter.schedule')
+                        ->with('status', 'Tweet was successfully scheduled.');
+                } else {
+                    return redirect()
+                        ->route('twitter.schedule')
+                        ->with('status', 'Tweet could not be scheduled. Please try again.');
+                }
+            }
+        } else {
+            return redirect()
+                ->route('twitter.schedule')
+                ->with('errors', $errors);
         }
     }
 }
