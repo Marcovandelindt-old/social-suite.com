@@ -27,10 +27,13 @@ Route::get('/home', 'HomeController@index')
  * Twitter Routes
  */
 Route::get('/twitter', 'TwitterController@index')
-    ->name('twitter.index');
+    ->name('twitter.index')->middleware('auth');
 
 Route::get('/twitter/authenticate', 'TwitterController@getAuthenticate')
-    ->name('twitter.authenticate');
+    ->name('twitter.authenticate')->middleware('auth');
 
 Route::post('twitter/authenticate', 'TwitterController@postAuthenticate')
-    ->name('twitter.authenticate.post');
+    ->name('twitter.authenticate.post')->middleware('auth');
+
+Route::get('twitter/schedule', 'TwitterController@getSchedule')
+    ->name('twitter.schedule')->middleware('auth');

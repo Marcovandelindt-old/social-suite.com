@@ -3,25 +3,35 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Support\Facades\Auth;
-use Abraham\TwitterOAuth\TwitterOAuth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\URL;
+use Illuminate\Http\Request;
+
+use Abraham\TwitterOAuth\TwitterOAuth;
+
+use App\TwitterUser;
 
 class TwitterController extends Controller
 {
+    public $callback = null;
+
+    /**
+     * @inheritdoc
+     */
+    public function __construct()
+    {
+        $this->callback = URL::current();
+    }
 
     /**
      * Index action
+     *
+     * @param Request $request
+     *
+     * @return \Illuminate\Support\Facades\Redirect | \Illuminate\View\View
      */
-    public function index()
+    public function index(Request $request)
     {
-        # First, check if user is authenticated
-        if (!Auth::user()) {
-            return redirect()->route('home');
-        }
-
-        $connection = $this->connect();
-
-        # Check whether the user is authenticated to use twitter
         if (Auth::user()->twitter_authenticated != 1) {
             return redirect()->route('twitter.authenticate');
         }
@@ -30,23 +40,23 @@ class TwitterController extends Controller
     }
 
     /**
-     * Connect to the Twitter API
+     * Connect to the twitter API
+     *
+     * @return TwitterOAuth $connection | false
      */
-    public function connect()
+    public function connect($oauth_token = null, $oauth_verifier = null)
     {
-        # Set the default keys
-        $consumerKey       = 'No9TPys7j3eFa0BQ69zDytMmI';
-        $consumerSecret    = '7yse5pHOk8D1DeBXBxEV6plTmzdK6t03SvNbPvN86XL1unDojM';
-        $accessToken       = '1192101975351005187-C1uoEfgpxgxUrKl3bhNcECrv8Snyis';
-        $accessTokenSecret = 'XjaOkZBZGVkgmm2TQt4hr3FpvByceOKk4aqClsNvqTFnk';
-        define('OAUTH_CALLBACK', getenv('OAUTH_CALLBACK'));
+        # Default values
+        $consumer_key    = env('TWITTER_CONSUMER_KEY');
+        $consumer_secret = env('TWITTER_CONSUMER_SECRET_KEY');
 
-        # Establish connection
-        $connection = new TwitterOAuth($consumerKey, $consumerSecret, $accessToken, $accessTokenSecret);
+        if (!empty($oauth_token) && !empty($oauth_verifier)) {
+            $connection = new TwitterOAuth($consumer_key, $consumer_secret, $oauth_token, $oauth_verifier);
+        } else {
+            $connection = new TwitterOAuth($consumer_key, $consumer_secret);
+        }
 
-        # Check the connection
-        $content = $connection->get('account/verify_credentials');
-        if ($content) {
+        if ($connection) {
             return $connection;
         }
 
@@ -54,40 +64,90 @@ class TwitterController extends Controller
     }
 
     /**
-     * Get the authenticate view
+     * Get the authentication view
+     *
+     * @param Request $request
+     *
+     * @return \Illuminate\Support\Facades\Redirect | \Illuminate\View\View
      */
-    public function getAuthenticate()
+    public function getAuthenticate(Request $request)
     {
-        # Update user and set authenticate twitter to 1
-        if (!empty(request()->oauth_token) && !empty(request()->oauth_verifier)) {
-            DB::table('users')
-                ->where('id', Auth::user()->id)
-                ->update(['twitter_authenticated' => 1]);
+        if (Auth::user()->twitter_authenticated == 1) {
+            return redirect()
+                ->route('twitter.index')
+                ->with('status', 'You have already authenticated yourself at Twitter');
         }
 
-        # Check if user is not authenticated yet
-        if (Auth::user()->twitter_authenticated) {
-            return redirect()
-                ->route('home')
-                ->with('status', 'You have already authenticated yourself at Twitter!');
+        # Check for oauth data
+        if (!empty(request()->oauth_token) && !empty(request()->oauth_verifier)) {
+            $this->verifyAndSave();
         }
 
         return view('twitter.authenticate');
     }
 
     /**
-     * Authenticate at twitter
+     * Authenticate at Twitter
+     *
+     * @param Request $request
+     *
+     * @return \Illuminate\Support\Facades\Redirect
      */
-    public function postAuthenticate()
+    public function postAuthenticate(Request $request)
     {
-        $connection    = $this->connect();
-        $request_token = $connection->oauth('oauth/request_token', ['oauth_callback' => OAUTH_CALLBACK]);
-        if (!empty($request_token)) {
-            $oauth_token        = $request_token['oauth_token'];
-            $oauth_token_secret = $request_token['oauth_token_secret'];
+        $connection = $this->connect();
+        if ($connection) {
+            $request_token = $connection->oauth('oauth/request_token', ['oauth_callback' => $this->callback]);
 
-            if (!empty($oauth_token) && !empty($oauth_token_secret)) {
-                return redirect($connection->url('oauth/authorize', ['oauth_token' => $oauth_token]));
+            if (!empty($request_token)) {
+                $oauth_token  = $request_token['oauth_token'];
+                $oauth_secret = $request_token['oauth_token_secret'];
+
+                if (!empty($oauth_token) && !empty($oauth_secret)) {
+                    $url = $connection->url('oauth/authorize', ['oauth_token' => $oauth_token]);
+
+                    if (!empty($url)) {
+                        return redirect($url);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Verify the oauth data
+     *
+     * @return \Illuminate\Support\Facades\Redirect
+     */
+    public function verifyAndSave()
+    {
+        $oauth_token    = request()->oauth_token;
+        $oauth_verifier = request()->oauth_verifier;
+        $connection     = $this->connect($oauth_token, $oauth_verifier);
+
+        if ($connection) {
+            $oauth_data = $connection->oauth('oauth/access_token', ['oauth_token' => $oauth_token, 'oauth_consumer_key' => env('TWITTER_CONSUMER_KEY'), 'oauth_verifier' => $oauth_verifier]);
+            if (!empty($oauth_data)) {
+                $oauth_token        = $oauth_data['oauth_token'];
+                $oauth_token_secret = $oauth_data['oauth_token_secret'];
+                $twitter_user_id    = $oauth_data['user_id'];
+                $screen_name        = $oauth_data['screen_name'];
+
+                # Create new TwitterUser
+                $twitter_user = new TwitterUser();
+                if ($twitter_user->create($oauth_token, $oauth_token_secret, $twitter_user_id, $screen_name)) {
+                    $twitter_user->setAuthenticated(1, Auth::user()->id);
+
+                    return redirect()
+                        ->route('twitter.index')
+                        ->with('status', 'Successfully authenticated at Twitter!');
+                } else {
+                    $twitter_user->setAuthenticated(0, Auth::user()->id);
+
+                    return redirect()
+                        ->route('twitter.authenticate')
+                        ->with('status', 'Something went wrong while trying to authenticate you at Twitter. Please try again later.');
+                }
             }
         }
     }
